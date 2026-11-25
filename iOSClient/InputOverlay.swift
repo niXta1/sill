@@ -709,9 +709,7 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
     /// picture under it and send the newly exposed location to the Mac.
     private func trackMouseEdge(_ point: CGPoint?) {
         edgePanPoint = point
-        guard let point, zoom.isZoomed, bounds.contains(point),
-              normalized(point, clamped: false) != nil,
-              zoom.panningUnderMouse(at: point, in: bounds.size) != zoom else {
+        guard let point, zoom.panningUnderMouse(at: point, in: bounds.size, videoRect: videoRect) != zoom else {
             edgePanTimer?.invalidate()
             edgePanTimer = nil
             return
@@ -719,9 +717,8 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
         guard edgePanTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
-            guard let point = self.edgePanPoint, self.window?.windowScene?.activationState == .foregroundActive,
-                  self.bounds.contains(point), self.normalized(point, clamped: false) != nil else { self.trackMouseEdge(nil); return }
-            let next = self.zoom.panningUnderMouse(at: point, in: self.bounds.size)
+            guard let point = self.edgePanPoint, self.window?.windowScene?.activationState == .foregroundActive else { self.trackMouseEdge(nil); return }
+            let next = self.zoom.panningUnderMouse(at: point, in: self.bounds.size, videoRect: self.videoRect)
             guard next != self.zoom else { self.trackMouseEdge(nil); return }
             self.zoom = next
             self.sendPointer(.move, at: point, clamped: true)

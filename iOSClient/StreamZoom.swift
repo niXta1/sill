@@ -72,16 +72,30 @@ struct StreamZoom: Equatable, Sendable {
     mutating func followPointer(at point: CGPoint, in size: CGSize) {
         guard isZoomed, size.width > 0, size.height > 0, point.x.isFinite, point.y.isFinite else { return }
         let tip = zoomedPoint(point, in: size)
-        let insetX = min(8, size.width / 2), insetY = min(8, size.height / 2)
-        let visible = CGPoint(x: min(max(tip.x, insetX), size.width - insetX),
-                              y: min(max(tip.y, insetY), size.height - insetY))
+        let visible = insetPoint(tip, in: size)
         if visible != tip { pinch(factor: 1, from: tip, to: visible, in: size) }
     }
 
-    /// One scroll step for an iPadOS pointer held at a fixed point in the pane.
-    func panningUnderMouse(at point: CGPoint, in size: CGSize) -> Self {
+    private func insetPoint(_ tip: CGPoint, in size: CGSize) -> CGPoint {
+        let insetX = min(8, size.width / 2), insetY = min(8, size.height / 2)
+        return CGPoint(x: min(max(tip.x, insetX), size.width - insetX),
+                       y: min(max(tip.y, insetY), size.height - insetY))
+    }
+
+    /// Keep the hardware pointer over the video, even when one axis reaches a letterbox
+    /// before the other runs out of content. Both ends of each axis are valid cursor positions.
+    func panningUnderMouse(at point: CGPoint, in size: CGSize, videoRect: CGRect) -> Self {
+        guard isZoomed, !videoRect.isEmpty, point.x >= 0, point.x <= size.width,
+              point.y >= 0, point.y <= size.height else { return self }
+        let first = zoomedPoint(videoRect.origin, in: size)
+        let last = zoomedPoint(CGPoint(x: videoRect.maxX, y: videoRect.maxY), in: size)
+        guard point.x >= first.x, point.x <= last.x, point.y >= first.y, point.y <= last.y else { return self }
+        let target = insetPoint(point, in: size)
+        let dx = min(point.x - first.x, max(point.x - last.x, target.x - point.x))
+        let dy = min(point.y - first.y, max(point.y - last.y, target.y - point.y))
+        guard dx != 0 || dy != 0 else { return self }
         var next = self
-        next.followPointer(at: unzoomedPoint(point, in: size), in: size)
+        next.pinch(factor: 1, from: .zero, to: CGPoint(x: dx, y: dy), in: size)
         return next
     }
 
