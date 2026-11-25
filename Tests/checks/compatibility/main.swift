@@ -132,6 +132,29 @@ check(Wire.decode(Goodbye.self, from: Data(later.utf8))?.reason == "pairAgain", 
 check(Goodbye.pairingRequired == "pairingRequired" && Goodbye.update == "update", "pairing at home's reason and the update notice's, as their devices read them")
 // The window list with and without the new keys.
 let list = WindowList(macName: "Mac mini", windows: [], active: .desktop, launchID: "L", hostVersion: "0.4.0", protocol: SillProtocol.current)
+// A hold belongs to one live connection. Its deadline includes time asleep and cannot be extended by a duplicate.
+check(list.backgroundSessionHold == nil, "a legacy list offers no hold")
+var capable = list
+capable.backgroundSessionHold = true
+check(Wire.decode(WindowList.self, from: Wire.encode(capable))?.backgroundSessionHold == true, "hold capability round trips")
+for minutes in [1, 3, 5, 10] {
+    let start = ContinuousClock.now
+    let end = start.advanced(by: .seconds(minutes * 60))
+    var hold = BackgroundSessionHold()
+    for bad in [Data(), Data([0]), Data([2]), Data([255]), Data([1, 0])] {
+        check(hold.receive(bad, at: start) == .unchanged && !hold.parked, "ignore unsupported hold")
+    }
+    check(hold.receive(Data([UInt8(minutes)]), at: start) == .parked, "park for \(minutes) min")
+    let almost = end.advanced(by: .milliseconds(-1))
+    check(hold.receive(Data([10]), at: almost) == .unchanged, "repeat does not extend the deadline")
+    var resumed = hold
+    check(resumed.receive(Data([0]), at: almost) == .resumed && !resumed.parked, "return just before expiry")
+    check(resumed.receive(Data([0]), at: end) == .unchanged, "duplicate resume")
+    check(resumed.receive(Data([1]), at: end) == .parked, "a later app switch starts a fresh hold")
+    check(hold.expired(at: end) && hold.receive(Data([0]), at: end) == .expired, "expiry wins even before the host sweep")
+}
+let expiredNotice = BackgroundSessionHold.expiryNotice
+check(expiredNotice.reason == "backgroundExpired" && expiredNotice.reconnect == false, "a background timeout requires an explicit reconnect")
 let listJSON = json(list)
 check(listJSON.contains(#""hostVersion":"0.4.0""#) && listJSON.contains(#""protocol":1"#), "the list carries both keys: \(listJSON)")
 let bare = json(WindowList(macName: "Mac mini", windows: [], active: .none, launchID: "L"))

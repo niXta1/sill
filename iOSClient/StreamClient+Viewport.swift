@@ -24,10 +24,10 @@ extension StreamClient {
         // While the picture shows only in Picture in Picture (#291), a layout iOS makes for its snapshots
         // must not resize the Mac's window or restart its stream: the viewport waits for Sill's window
         // (`pictureBackInSill`), the last one sent standing meanwhile.
-        if shownOnlyInPictureInPicture {
+        if shownOnlyInPictureInPicture || backgroundHold.parked {
             viewportHeld = v
             #if DEBUG
-            print("viewport: held while the picture shows only in Picture in Picture")
+            print("viewport: held until the stream window returns")
             #endif
             return
         }

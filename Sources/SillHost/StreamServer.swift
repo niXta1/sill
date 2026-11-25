@@ -83,6 +83,7 @@ final class StreamServer {
         var link: ClientLink.Route?
         /// The last header received from it (remote clients: silence eviction).
         var lastHeardAt = Date().timeIntervalSince1970
+        var backgroundHold = BackgroundSessionHold()
         /// No keyframe has reached it since it was admitted or the stream changed: a remote client's
         /// next one goes out whatever its queue holds, and no client's skipped frames count against
         /// its link meanwhile (LinkJudge: that wait is the connect or a restart, not the link).
@@ -182,6 +183,8 @@ final class StreamServer {
     /// Mac read locked. The connection it was for, nil for a broadcast's (every device): the unlock sends
     /// that device every icon and the apps again. Called on the network queue.
     var onCatalogWithheld: ((ObjectIdentifier?) -> Void)?
+    /// An admitted device parked or resumed its connection. Called on the network queue.
+    var onBackgroundHoldChanged: ((NWConnection, Bool) -> Void)?
     /// A client fell behind and lost a delta frame; the encoder should produce a keyframe now
     /// rather than in up to 4 s. Called on the network queue.
     var onKeyframeNeeded: (() -> Void)?
@@ -284,7 +287,7 @@ final class StreamServer {
         // The Mac's pointer, unless the frame-rate sampler has it while it moves.
         let reported = pointerSampler == nil ? samplePointer(now: now) : []
         let data = StreamMessage(kind: .tick, timestamp: now, isKeyframe: false, payload: Data()).serialized()
-        for (id, client) in clients where client.connection.state == .ready {
+        for (id, client) in clients where client.connection.state == .ready && !client.backgroundHold.parked {
             // A kind 26 just sent keeps its link awake this turn.
             if reported.contains(id) { continue }
             // Over TLS every record costs CPU (the remote plan's H20): skip a tick right after
@@ -321,14 +324,14 @@ final class StreamServer {
             setPointerSampler(interval: nil)
             return []
         }
-        let ready = clients.compactMap { $0.value.connection.state == .ready ? $0.key : nil }
+        let ready = clients.compactMap { $0.value.connection.state == .ready && !$0.value.backgroundHold.parked ? $0.key : nil }
         guard let watch = pointerWatch, let reading = watch.sample(devices: ready) else {
             setPointerSampler(interval: nil)
             return []
         }
         var sent = Set<ObjectIdentifier>()
         var watched = false
-        for (id, client) in clients where client.connection.state == .ready {
+        for (id, client) in clients where client.connection.state == .ready && !client.backgroundHold.parked {
             guard let report = reading.report(for: id, seen: client.inputsRead) else {
                 client.lastPointer = nil
                 continue
@@ -1353,12 +1356,20 @@ final class StreamServer {
         }
     }
 
+    private func endBackgroundHold(_ client: Client) {
+        goodbye(BackgroundSessionHold.expiryNotice, to: client.connection)
+    }
+
     private func sweep() {
         let now = Date().timeIntervalSince1970
         let since = lastSweepAt
         lastSweepAt = now
         var waiting: [Client] = []
         for client in clients.values {
+            if client.backgroundHold.parked {
+                if !client.revoked, client.backgroundHold.expired(at: .now) { endBackgroundHold(client) }
+                continue
+            }
             let second = LinkJudge.Second(sent: client.sentThisSecond, withheld: client.withheldThisSecond, taken: client.takenThisSecond,
                                           waiting: client.pendingBytes, heard: client.lastHeardAt > since)
             client.sentThisSecond = 0
@@ -1545,6 +1556,29 @@ final class StreamServer {
                     self.receiveLoop(client)
                     return
                 }
+                if header.kind == .backgroundSession {
+                    switch client.backgroundHold.receive(payload, at: .now) {
+                    case .parked:
+                        self.onBackgroundHoldChanged?(c, true)
+                    case .resumed:
+                        client.needsKeyframe = true
+                        client.awaitingFirstKeyframe = true
+                        client.audioEpochSent = nil
+                        client.lastPointer = nil
+                        if client.inflightFrames > 0 { client.oldestUnackedFrameAt = client.lastHeardAt }
+                        self.onBackgroundHoldChanged?(c, false)
+                    case .expired: self.endBackgroundHold(client); return
+                    case .unchanged: break
+                    }
+                    self.receiveLoop(client)
+                    return
+                }
+                if client.backgroundHold.parked {
+                    // A handover fences the old socket with an eight-byte ping. A suspended
+                    // stream can acknowledge that fence without resuming delivery or renewing its hold.
+                    guard !client.backgroundHold.expired(at: .now) else { self.endBackgroundHold(client); return }
+                    guard header.kind == .ping, payload.count == 8 else { self.receiveLoop(client); return }
+                }
                 if header.kind == .input {
                     self.lastInputAt = Date().timeIntervalSince1970
                     if self.tickTimer == nil { self.updateTicking() }
@@ -1557,7 +1591,8 @@ final class StreamServer {
                 if header.kind == .ping {
                     // Echo straight back from the network queue: the round trip should measure the
                     // network and nothing else.
-                    self.send(StreamMessage(kind: .pong, timestamp: header.timestamp, isKeyframe: false, payload: payload).serialized(), to: client)
+                    let pong = StreamMessage(kind: .pong, timestamp: header.timestamp, isKeyframe: false, payload: payload)
+                    self.send(pong.serialized(), to: client, whileParked: true)
                 } else if header.kind == .clientStats {
                     // What the device sees, printed here so the latency number is in the Mac's log.
                     // The client reports every second; every other report (~2 s) is enough. The gate
@@ -1641,6 +1676,7 @@ final class StreamServer {
             var wantKeyframe = false
             defer { if wantKeyframe { onKeyframeNeeded?() } }
             for client in clients.values where client.connection.state == .ready {
+                guard !client.backgroundHold.parked else { continue }
                 if message.kind == .frame, client.route.isRemote {
                     if paceRemote(client, message: message, data: data) { wantKeyframe = true }
                     continue
@@ -1719,6 +1755,7 @@ final class StreamServer {
         queue.async { [self] in
             if lockGate.withholds(.audio) { withheld(.audio, for: nil); return }
             for client in clients.values where client.audioCodec == AudioCodec.aacELD && client.connection.state == .ready {
+                guard !client.backgroundHold.parked else { continue }
                 if client.audioEpochSent != epoch {
                     guard let format = audioFormat, format.epoch == epoch else { continue }
                     sendAudio(format.data, to: client)
@@ -1862,8 +1899,9 @@ final class StreamServer {
     /// No eviction while the connect burst (catalog + first keyframe) is still draining.
     private static let graceAfterConnect: TimeInterval = 8.0
 
-    private func send(_ data: Data, to client: Client, isFrame: Bool = false, isKeyframe: Bool = false) {
+    private func send(_ data: Data, to client: Client, isFrame: Bool = false, isKeyframe: Bool = false, whileParked: Bool = false) {
         let now = Date().timeIntervalSince1970
+        guard whileParked || !client.backgroundHold.parked else { return }
         let remote = client.route.isRemote
         if isFrame, let oldest = client.oldestUnackedFrameAt,
            now - oldest > (remote ? Self.remoteDeadAfter : Self.deadAfter),

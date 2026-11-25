@@ -99,6 +99,7 @@ public enum StreamMessageKind: UInt8 {
                              // whose window list says `desktopDisplays` 2 or more; ignored unless the Desktop
                              // streams, refused while the Mac is locked. A person at the device (DisplayWake).
                              // `{"number": n}` is kept for PR #296's list
+    case backgroundSession = 80 // device → host, one byte: hold minutes, or zero to resume (BackgroundSessionHold)
     case unknown = 255       // never sent: what parseHeader yields for a kind this build does not know
 }
 

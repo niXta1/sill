@@ -53,6 +53,8 @@ public struct WindowList: Codable {
     /// 2026-09-27, to which a device sends no kind 28. A later generation of gestures says 2 and
     /// goes only to a host that says so.
     public var gestures: Int?
+    /// This host accepts kind 80 on an admitted session connection. Omitted by older hosts.
+    public var backgroundSessionHold: Bool?
     /// What this host takes and sends of the clipboard (kind 32, Clipboard.swift): 1 is text
     /// (`ClipboardPolicy.generation`). Nil from every host before 2026-10-14, and from one whose Share
     /// clipboard with devices is off: a device sends no kind 32 to either. A later generation
