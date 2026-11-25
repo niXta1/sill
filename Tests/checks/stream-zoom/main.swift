@@ -494,6 +494,32 @@ do {
     check("two fingers on top of each other: no scale read from them", u.zoom == Z())
 }
 
+// Pointer following uses pane coordinates, including a letterboxed video's origin.
+do {
+    let size = CGSize(width: 400, height: 300), center = CGPoint(x: 200, y: 150)
+    var whole = Z()
+    whole.followPointer(at: .zero, in: size)
+    check("pointer at 1× leaves the whole picture in place", whole == Z())
+    var picture = zoomed(2, at: center, in: size)
+    let original = picture
+    picture.followPointer(at: center, in: size)
+    check("interior motion keeps the manual framing", picture == original)
+    for (point, expected) in [(CGPoint(x: 340, y: 150), CGPoint(x: 392, y: 150)),
+                              (CGPoint(x: 60, y: 150), CGPoint(x: 8, y: 150)),
+                              (CGPoint(x: 60, y: 240), CGPoint(x: 8, y: 292)),
+                              (CGPoint(x: 340, y: 60), CGPoint(x: 392, y: 8))] {
+        picture.followPointer(at: point, in: size)
+        check("minimal pan at \(point)", near(picture.zoomedPoint(point, in: size), expected) && picture.scale == 2)
+    }
+    let rightEdge = CGPoint(x: 399, y: 150)
+    var underMouse = original
+    for _ in 0..<100 { underMouse = underMouse.panningUnderMouse(at: rightEdge, in: size) }
+    check("a stationary hardware mouse at the edge can reach the far side", near(underMouse.offset.width, -200))
+    check("native edge pan stops when the pointer moves inside", underMouse.panningUnderMouse(at: center, in: size) == underMouse)
+    picture.followPointer(at: .zero, in: size)
+    check("following stops at the corner of the image", near(picture.zoomedPoint(.zero, in: size), .zero) && covers(picture, size))
+}
+
 // MARK: - 20,000 random strokes
 
 do {

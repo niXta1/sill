@@ -185,9 +185,14 @@ final class HEVCDisplayView: UIView {
     /// Shows the sprite at `p` (a fraction of the video frame) or hides it (nil): the Mac's pointer
     /// or this device's own, whichever `StreamClient.renderPointer` says. Up to 120 times a second.
     /// Main thread.
-    func setPointer(_ p: CGPoint?) {
+    func setPointer(_ p: CGPoint?, following model: StreamZoomModel? = nil) {
+        let moved = p != pointer
         pointer = p
         placeCursor()
+        guard moved, let model, model.zoom.isZoomed, !cursorLayer.isHidden else { return }
+        var zoom = model.zoom
+        zoom.followPointer(at: cursorLayer.position, in: bounds.size)
+        model.set(zoom)
     }
 
     #if DEBUG
@@ -520,6 +525,7 @@ struct StreamView: UIViewRepresentable {
     let client: StreamClient
     /// The picture's zoom, which the sprite counters (`HEVCDisplayView.setZoom`).
     var zoom = StreamZoom()
+    var followModel: StreamZoomModel?
 
     /// Hosts the client's single display view. SwiftUI may build the new layout's host before it
     /// dismantles the old one, so detach the view from wherever it was first.
@@ -548,8 +554,9 @@ struct StreamView: UIViewRepresentable {
         // too (after the tour, while one shows: `pointerFrameChanged`); the Mac's arrow follows the
         // host's next report.
         view.onVideoSizeForPointer = { [weak client] _ in client?.pointerFrameChanged() }
-        // Catch up with what the sprite shows now (a pointer set before this view was hosted).
+        // Synchronize the sprite without panning on re-host. Only later pointer changes move the pane.
         client.renderPointer()
+        client.onPointerChange = { [weak view, weak followModel] p in view?.setPointer(p, following: followModel) }
     }
 
     func updateUIView(_ uiView: HEVCDisplayView, context: Context) { uiView.setZoom(zoom) }
@@ -592,7 +599,7 @@ struct ZoomedStreamView: View {
     @ObservedObject var zoom: StreamZoomModel
 
     var body: some View {
-        StreamView(client: client, zoom: zoom.zoom)
+        StreamView(client: client, zoom: zoom.zoom, followModel: zoom)
             .onGeometryChange(for: CGSize.self, of: { $0.size }) { zoom.paneResized(to: $0) }
             .scaleEffect(zoom.zoom.scale)
             .offset(zoom.zoom.offset)
