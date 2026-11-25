@@ -13,7 +13,10 @@ struct ContentView: View {
         root.onAppear { statsReporter.attach(to: client) }
             // This window's sound: a scene in the background is not heard, though another keeps the app
             // active (inactive is still on screen: Control Center over it, a headless simulator).
-            .onChange(of: scenePhase, initial: true) { _, phase in client.sound.setSceneForeground(phase != .background) }
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                client.sound.setSceneForeground(phase != .background)
+                client.setSceneInBackground(phase == .background)
+            }
     }
 
     @ViewBuilder private var root: some View {

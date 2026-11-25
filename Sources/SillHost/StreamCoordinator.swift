@@ -610,6 +610,19 @@ package final class StreamCoordinator {
             let id = ObjectIdentifier(connection)
             Task { @MainActor in self?.linkChanged(id, verdict) }
         }
+        server.onBackgroundHoldChanged = { [weak self] connection, parked in
+            Task { @MainActor in
+                guard let self else { return }
+                let id = ObjectIdentifier(connection)
+                guard self.connections[id] === connection, !self.revoked.contains(id) else { return }
+                if parked {
+                    self.releaseKeys(of: id, includingButtons: true)
+                } else {
+                    self.sendCatalog(to: connection)
+                    self.encoder?.requestKeyframe()
+                }
+            }
+        }
         server.onKeyframeNeeded = { [weak self] in
             // Network queue → encoder lock: the next repaint carries the keyframe, or the last frame is
             // re-encoded once the window has been still for 50 ms (HEVCEncoder.requestKeyframe).
@@ -2624,8 +2637,8 @@ package final class StreamCoordinator {
     /// the buttons of one the Mac no longer served (`revoked`: RevokedInput.buttonsLetGo), after
     /// whatever of its input is still held for an activation, so no up of its own is overtaken and no
     /// down of its own comes after.
-    private func releaseKeys(of device: KeyStrokes.Device) {
-        let wasRevoked = revoked.contains(device)
+    private func releaseKeys(of device: KeyStrokes.Device, includingButtons: Bool = false) {
+        let wasRevoked = includingButtons || revoked.contains(device)
         if !heldInput.isEmpty || CFAbsoluteTimeGetCurrent() < holdUntil { leftWhileHeld.append((device, wasRevoked)); return }
         injector.releaseKeys(of: device, revoked: wasRevoked)
     }
@@ -3670,6 +3683,7 @@ package final class StreamCoordinator {
         // This host repeats a device's held key (KeyRepeat), so a device sends it a hardware keyboard's
         // characters as keys.
         list.keyRepeat = KeyRepeat.generation
+        list.backgroundSessionHold = true
         // The Desktop's stops (DesktopDisplays), with two or more: a device's button reads "Desktop 2" and
         // steps with kind 47, and VoiceOver names the stop. None from a synthetic host, whose Desktop is the
         // test pattern, but under SILL_TEST_DISPLAYS; none while locked or off console (LockPolicy.list).

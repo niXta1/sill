@@ -938,6 +938,12 @@ final class StreamClient: ObservableObject {
     /// six, nil from a Mac before 2026-09-27, which is sent none (`sendGesture`). Cleared with the
     /// session.
     @Published var hostGestures: Int?
+    @Published private(set) var hostSupportsBackgroundHold = false
+    static let backgroundHoldKey = "Sill.backgroundSessionMinutes"
+    private var sceneInBackground = false
+    /// The connection which advertised the capability (main) and the one parked (network queue).
+    private weak var backgroundHoldHost: NWConnection?
+    private weak var parkedConnection: NWConnection?
     /// Whether this session's Mac repeats a key held down (`WindowList.keyRepeat`, KeyRepeat on the host):
     /// 1 from a Mac with key repeat, nil from one before it. The stream's input view sends a hardware
     /// keyboard's characters as keys only to a Mac that says so (KeyTyping); to one before it they go
@@ -1269,6 +1275,7 @@ final class StreamClient: ObservableObject {
     /// Main thread.
     private func runningChanged() {
         let running = PictureInPicturePolicy.running(appForeground: !appInBackground, pip: pictureInPictureState)
+        updateBackgroundHold()
         guard running != appInForeground else { return }
         appInForeground = running
         #if DEBUG
@@ -1276,6 +1283,35 @@ final class StreamClient: ObservableObject {
             print("pip: Sill " + (running ? "runs as in the foreground: Picture in Picture keeps it running" : "is in the background"))
         }
         #endif
+    }
+
+    func setSceneInBackground(_ background: Bool) {
+        guard background != sceneInBackground else { return }
+        sceneInBackground = background
+        updateBackgroundHold()
+    }
+
+    /// Tell this particular Mac before suspension. The Mac owns the deadline.
+    /// Live Picture in Picture counts as foreground and resumes the connection too.
+    private func updateBackgroundHold() {
+        guard let host = backgroundHoldHost, host === connection else { return }
+        let defaults = UserDefaults.standard
+        let minutes = defaults.object(forKey: Self.backgroundHoldKey) == nil
+            ? BackgroundSessionHold.defaultMinutes : defaults.integer(forKey: Self.backgroundHoldKey)
+        let away = (appInBackground || sceneInBackground) && !pictureInPictureState.active
+        let park = away && BackgroundSessionHold.minutes.contains(minutes)
+        queue.async { [weak self] in
+            guard let self, self.connection === host, (self.parkedConnection === host) != park else { return }
+            self.parkedConnection = park ? host : nil
+            if !park {
+                self.lastReceivedAt = CACurrentMediaTime()
+                self.windowOpenedAt = self.lastReceivedAt
+                self.unviableSince = nil
+            }
+            let control = StreamMessage(kind: .backgroundSession, timestamp: Date().timeIntervalSince1970,
+                                        isKeyframe: false, payload: Data([park ? UInt8(minutes) : 0]))
+            host.send(content: control.serialized(), completion: .contentProcessed { _ in })
+        }
     }
 
     /// The device's own input waits: the tour shows, or the picture shows only in Picture in Picture
@@ -3728,6 +3764,8 @@ final class StreamClient: ObservableObject {
         hostVersion = nil
         hostProtocol = nil
         hostGestures = nil
+        hostSupportsBackgroundHold = false
+        backgroundHoldHost = nil
         hostKeyRepeat = nil
         hostDesktopDisplays = nil
         hostDesktopDisplay = nil
@@ -4437,6 +4475,12 @@ final class StreamClient: ObservableObject {
                 if self.hostVersion != list.hostVersion { self.hostVersion = list.hostVersion }
                 if self.hostProtocol != list.protocol { self.hostProtocol = list.protocol }
                 if self.hostGestures != list.gestures { self.hostGestures = list.gestures }
+                let offersHold = list.backgroundSessionHold == true
+                if self.hostSupportsBackgroundHold != offersHold { self.hostSupportsBackgroundHold = offersHold }
+                if offersHold, self.backgroundHoldHost !== from {
+                    self.backgroundHoldHost = from
+                    self.updateBackgroundHold()
+                }
                 self.hostKeyRepeat = list.keyRepeat
                 self.desktopStopsChanged(list)
                 // A locked Mac's list has no windows: the drawer and the panel say why, the cover over the
@@ -4663,7 +4707,7 @@ final class StreamClient: ObservableObject {
 
     /// Closes the open window and publishes it. On `queue`, once a second.
     private func closeWindow(of c: NWConnection) {
-        guard c === connection else { return }   // replaced or gone: not this session's numbers
+        guard c === connection, c !== parkedConnection else { return }   // replaced, parked or gone: not this session's numbers
         let now = CACurrentMediaTime()
         let elapsed = now - windowOpenedAt
         windowOpenedAt = now
@@ -4739,7 +4783,7 @@ final class StreamClient: ObservableObject {
         case .cancelled, .failed: return
         default: break
         }
-        guard c === connection, checkLiveness(c) else { return }
+        guard c === connection, c !== parkedConnection, checkLiveness(c) else { return }
         var payload = Data(capacity: 8)
         var v = CACurrentMediaTime().bitPattern.bigEndian
         Swift.withUnsafeBytes(of: &v) { payload.append(contentsOf: $0) }

@@ -115,3 +115,7 @@ device keeps working with Macs from the first public build on, or each says why
   pairing dial plain TCP and say hello in plaintext: at the TLS door they get a failed handshake
   and EOF, never kind 22 "update", and redial. Only development and TestFlight builds are that
   old, so no plaintext path or sniffer answers them.
+
+## Timed background sessions
+
+A Mac that offers timed holds includes the optional boolean `backgroundSessionHold: true` in its window list. Only such connections receive kind 80. Its one-byte payload is a duration in minutes (1, 3, 5 or 10), or zero to resume. A duplicate hold keeps its first deadline. Hosts ignore unsupported payloads. Earlier clients omit the request, and earlier hosts omit the capability.

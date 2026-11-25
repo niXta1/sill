@@ -71,6 +71,7 @@ struct HostSettingsPanel: View {
     @AppStorage(StreamClient.reverseScrollKey) private var reverseScroll = false
     /// This device's switch for Picture in Picture (#291, docs/picture-in-picture-plan.md): off unless turned
     /// on (`PictureInPicturePolicy.defaultOn`), read by PictureInPictureHub, never sent.
+    @AppStorage(StreamClient.backgroundHoldKey) private var backgroundHoldMinutes = BackgroundSessionHold.defaultMinutes
     @AppStorage(StreamClient.pictureInPictureKey) private var pictureInPicture = PictureInPicturePolicy.defaultOn
     /// This device's switch for Larger Picture (docs/larger-picture-plan.md): off unless turned on,
     /// read by the stream screen, never sent.
@@ -716,6 +717,24 @@ struct HostSettingsPanel: View {
                 }
             }
             Footnote(text: PictureInPicturePolicy.Copy.footnote(mac: mac))
+        }
+        if client.hostSupportsBackgroundHold {
+            Rows {
+                HStack {
+                    Text("Keep Session in Background").foregroundStyle(Palette.text)
+                    Spacer()
+                    Picker("Keep Session in Background", selection: $backgroundHoldMinutes) {
+                        Text("Off").tag(0)
+                        ForEach(BackgroundSessionHold.minutes, id: \.self) { minutes in
+                            Text("\(minutes) min").tag(minutes)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+                .rowFrame()
+            }
+            Footnote(text: "Your Mac waits this long when you leave Sill. Return before the time runs out to resume.")
         }
         // Full Screen and Shake to Show Controls here only while the Mac's settings do not show (loading, or a
         // Mac without them): FullScreenPolicy.rowsPlace.

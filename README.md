@@ -120,6 +120,12 @@ Sill has layouts of its own.
   Sill for Mac reads each menu from the app as you open it and chooses the
   item you pick, through Accessibility. When someone moves the mouse at your
   Mac, your device shows the pointer where it is.
+- **Keep Session in Background** in the iPhone or iPad settings lets your Mac
+  hold the connection for 1, 3, 5 or 10 minutes when you switch apps or lock
+  your device. The default is 3 minutes. Choose Off for the usual connection
+  behavior. While held, the Mac pauses delivery of picture and sound. Return
+  in time to resume on the same connection. A force quit or a lost connection
+  requires a new connection. Both apps must support this setting.
 - **The connect screen** on your device shows each Mac as a tile, a paired Mac
   with its screen as your last session with it ended. The picture stays on
   your device until you remove it or forget the Mac. The button beside
