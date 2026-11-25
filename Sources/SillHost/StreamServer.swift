@@ -183,9 +183,10 @@ final class StreamServer {
     /// Mac read locked. The connection it was for, nil for a broadcast's (every device): the unlock sends
     /// that device every icon and the apps again. Called on the network queue.
     var onCatalogWithheld: ((ObjectIdentifier?) -> Void)?
+    /// An admitted device parked or resumed its connection. Called on the network queue.
+    var onBackgroundHoldChanged: ((NWConnection, Bool) -> Void)?
     /// A client fell behind and lost a delta frame; the encoder should produce a keyframe now
     /// rather than in up to 4 s. Called on the network queue.
-    var onBackgroundHoldChanged: ((NWConnection, Bool) -> Void)?
     var onKeyframeNeeded: (() -> Void)?
     /// Number of connected clients changed. Called on the network queue. Zero means the host can idle.
     var onClientCountChanged: ((Int) -> Void)?
@@ -1356,8 +1357,7 @@ final class StreamServer {
     }
 
     private func endBackgroundHold(_ client: Client) {
-        let notice = Goodbye(reason: "backgroundExpired", message: "The background session expired. Tap your Mac to reconnect.", reconnect: false)
-        goodbye(notice, to: client.connection)
+        goodbye(BackgroundSessionHold.expiryNotice, to: client.connection)
     }
 
     private func sweep() {
@@ -1367,7 +1367,7 @@ final class StreamServer {
         var waiting: [Client] = []
         for client in clients.values {
             if client.backgroundHold.parked {
-                if client.backgroundHold.expired(at: .now) { endBackgroundHold(client) }
+                if !client.revoked, client.backgroundHold.expired(at: .now) { endBackgroundHold(client) }
                 continue
             }
             let second = LinkJudge.Second(sent: client.sentThisSecond, withheld: client.withheldThisSecond, taken: client.takenThisSecond,
@@ -1574,8 +1574,10 @@ final class StreamServer {
                     return
                 }
                 if client.backgroundHold.parked {
-                    self.receiveLoop(client)
-                    return
+                    // A handover fences the old socket with an eight-byte ping. A suspended
+                    // stream can acknowledge that fence without resuming delivery or renewing its hold.
+                    guard !client.backgroundHold.expired(at: .now) else { self.endBackgroundHold(client); return }
+                    guard header.kind == .ping, payload.count == 8 else { self.receiveLoop(client); return }
                 }
                 if header.kind == .input {
                     self.lastInputAt = Date().timeIntervalSince1970
@@ -1589,7 +1591,8 @@ final class StreamServer {
                 if header.kind == .ping {
                     // Echo straight back from the network queue: the round trip should measure the
                     // network and nothing else.
-                    self.send(StreamMessage(kind: .pong, timestamp: header.timestamp, isKeyframe: false, payload: payload).serialized(), to: client)
+                    let pong = StreamMessage(kind: .pong, timestamp: header.timestamp, isKeyframe: false, payload: payload)
+                    self.send(pong.serialized(), to: client, whileParked: true)
                 } else if header.kind == .clientStats {
                     // What the device sees, printed here so the latency number is in the Mac's log.
                     // The client reports every second; every other report (~2 s) is enough. The gate
@@ -1896,9 +1899,9 @@ final class StreamServer {
     /// No eviction while the connect burst (catalog + first keyframe) is still draining.
     private static let graceAfterConnect: TimeInterval = 8.0
 
-    private func send(_ data: Data, to client: Client, isFrame: Bool = false, isKeyframe: Bool = false) {
+    private func send(_ data: Data, to client: Client, isFrame: Bool = false, isKeyframe: Bool = false, whileParked: Bool = false) {
         let now = Date().timeIntervalSince1970
-        guard !client.backgroundHold.parked else { return }
+        guard whileParked || !client.backgroundHold.parked else { return }
         let remote = client.route.isRemote
         if isFrame, let oldest = client.oldestUnackedFrameAt,
            now - oldest > (remote ? Self.remoteDeadAfter : Self.deadAfter),

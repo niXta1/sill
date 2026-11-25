@@ -118,4 +118,4 @@ device keeps working with Macs from the first public build on, or each says why
 
 ## Timed background sessions
 
-A Mac that offers timed holds includes the optional boolean `backgroundSessionHold: true` in its window list. Only such connections receive kind 80. Its one-byte payload is a duration in minutes (1, 3, 5 or 10), or zero to resume. A duplicate hold keeps its first deadline. Hosts ignore unsupported payloads. Earlier clients omit the request, and earlier hosts omit the capability.
+A Mac that offers timed holds includes the optional boolean `backgroundSessionHold: true` in its window list. Only such connections receive kind 80. Its one-byte payload is a duration in minutes (1, 3, 5 or 10), or zero to resume. A duplicate hold keeps its first deadline. Hosts ignore unsupported payloads. Earlier clients omit the request, and earlier hosts omit the capability. A parked connection can still acknowledge the eight-byte ping used to hand the stream over to another network path. This keeps the original deadline.

@@ -4,6 +4,9 @@ import Foundation
 public struct BackgroundSessionHold {
     public static let minutes = [1, 3, 5, 10]
     public static let defaultMinutes = 3
+    public static let expiryNotice = Goodbye(reason: "backgroundExpired",
+                                            message: "The background session expired. Tap your Mac to reconnect.",
+                                            reconnect: false)
     public enum Change { case unchanged, parked, resumed, expired }
 
     private var deadline: ContinuousClock.Instant?

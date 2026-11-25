@@ -153,6 +153,8 @@ for minutes in [1, 3, 5, 10] {
     check(resumed.receive(Data([1]), at: end) == .parked, "a later app switch starts a fresh hold")
     check(hold.expired(at: end) && hold.receive(Data([0]), at: end) == .expired, "expiry wins even before the host sweep")
 }
+let expiredNotice = BackgroundSessionHold.expiryNotice
+check(expiredNotice.reason == "backgroundExpired" && expiredNotice.reconnect == false, "a background timeout requires an explicit reconnect")
 let listJSON = json(list)
 check(listJSON.contains(#""hostVersion":"0.4.0""#) && listJSON.contains(#""protocol":1"#), "the list carries both keys: \(listJSON)")
 let bare = json(WindowList(macName: "Mac mini", windows: [], active: .none, launchID: "L"))

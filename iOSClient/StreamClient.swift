@@ -940,6 +940,9 @@ final class StreamClient: ObservableObject {
     @Published var hostGestures: Int?
     @Published private(set) var hostSupportsBackgroundHold = false
     static let backgroundHoldKey = "Sill.backgroundSessionMinutes"
+    /// Main-thread copy of the deadline, including time iOS suspends this process.
+    /// A socket can close before the host’s expiry notice reaches the device.
+    private(set) var backgroundHold = BackgroundSessionHold()
     private var sceneInBackground = false
     /// The connection which advertised the capability (main) and the one parked (network queue).
     private weak var backgroundHoldHost: NWConnection?
@@ -1291,7 +1294,7 @@ final class StreamClient: ObservableObject {
         updateBackgroundHold()
     }
 
-    /// Tell this particular Mac before suspension. The Mac owns the deadline.
+    /// Tell this particular Mac before suspension. Both ends enforce the selected deadline.
     /// Live Picture in Picture counts as foreground and resumes the connection too.
     private func updateBackgroundHold() {
         guard let host = backgroundHoldHost, host === connection else { return }
@@ -1300,17 +1303,38 @@ final class StreamClient: ObservableObject {
             ? BackgroundSessionHold.defaultMinutes : defaults.integer(forKey: Self.backgroundHoldKey)
         let away = (appInBackground || sceneInBackground) && !pictureInPictureState.active
         let park = away && BackgroundSessionHold.minutes.contains(minutes)
+        let payload = Data([park ? UInt8(minutes) : 0])
+        let change = backgroundHold.receive(payload, at: .now)
+        switch change {
+        case .unchanged: return
+        case .expired:
+            if goodbye == nil { goodbye = BackgroundSessionHold.expiryNotice }
+            host.cancel()
+            endSession()
+            return
+        case .parked, .resumed: break
+        }
+
         queue.async { [weak self] in
-            guard let self, self.connection === host, (self.parkedConnection === host) != park else { return }
+            guard let self, self.connection === host else { return }
             self.parkedConnection = park ? host : nil
             if !park {
                 self.lastReceivedAt = CACurrentMediaTime()
                 self.windowOpenedAt = self.lastReceivedAt
                 self.unviableSince = nil
             }
-            let control = StreamMessage(kind: .backgroundSession, timestamp: Date().timeIntervalSince1970,
-                                        isKeyframe: false, payload: Data([park ? UInt8(minutes) : 0]))
-            host.send(content: control.serialized(), completion: .contentProcessed { _ in })
+        }
+        // Send on the advertised socket before any main-thread foreground updates.
+        let control = StreamMessage(kind: .backgroundSession, timestamp: Date().timeIntervalSince1970,
+                                    isKeyframe: false, payload: payload)
+        host.send(content: control.serialized(), completion: .contentProcessed { _ in })
+        if change == .resumed {
+            subscribeToMenus()
+            if ClipboardPolicy.hostTakes(hostClipboard) {
+                clipboardSubscribed = Self.clipboardOn
+                send(.clipboard, payload: clipboardSubscribed ? ClipboardPolicy.subscription : ClipboardPolicy.stopping)
+            }
+            pictureBackInSill()
         }
     }
 
@@ -3679,6 +3703,11 @@ final class StreamClient: ObservableObject {
             guard self.connection === c else { return }   // stale callback from a connection we already replaced
             // A Disconnect waiting for its keyframe: the person's leave stands, with no reconnect.
             if self.freshPictureWait != nil { self.finishDisconnect(); return }
+            if self.backgroundHoldHost === c, self.backgroundHold.expired(at: .now), self.goodbye == nil {
+                self.goodbye = BackgroundSessionHold.expiryNotice
+                self.endSession()
+                return
+            }
             // A move carries the session on (`rescue`), not when this device closed the connection
             // itself (`end`: a message no Sill sends): that one ends with the words it deserves.
             if self.sessionDead || (end == nil && self.rescue(from: c)) { return }
@@ -3766,6 +3795,7 @@ final class StreamClient: ObservableObject {
         hostGestures = nil
         hostSupportsBackgroundHold = false
         backgroundHoldHost = nil
+        backgroundHold = BackgroundSessionHold()
         hostKeyRepeat = nil
         hostDesktopDisplays = nil
         hostDesktopDisplay = nil
@@ -4479,6 +4509,7 @@ final class StreamClient: ObservableObject {
                 if self.hostSupportsBackgroundHold != offersHold { self.hostSupportsBackgroundHold = offersHold }
                 if offersHold, self.backgroundHoldHost !== from {
                     self.backgroundHoldHost = from
+                    self.backgroundHold = BackgroundSessionHold()
                     self.updateBackgroundHold()
                 }
                 self.hostKeyRepeat = list.keyRepeat
