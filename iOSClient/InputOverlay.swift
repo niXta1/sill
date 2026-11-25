@@ -96,6 +96,8 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
     /// True once the hover in progress has shown itself to be a Pencil. Sticky for the session so a
     /// Pencil reading zero for a moment at the bottom of its range does not flicker the pointer.
     private var hoverIsPencil = false
+    private var edgePanPoint: CGPoint?
+    private var edgePanTimer: Timer?
     /// A Pencil touch is on the glass, from its `touchesBegan` to its `touchesEnded` or
     /// `touchesCancelled`. A hover update that comes meanwhile is stale and goes nowhere: as the tip
     /// lifts, iPadOS sends one more, about 1 ms before the touch ends, carrying where the Pencil
@@ -558,7 +560,7 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { momentum.stop(); releaseForwardedKeys(); commitComposition("left its window"); pencilTouching = false }
+        if window == nil { trackMouseEdge(nil); momentum.stop(); releaseForwardedKeys(); commitComposition("left its window"); pencilTouching = false }
         // A session's start, a rotation's other layout, a reconnect's new screen: the proxy takes the
         // keyboard for a hardware keyboard (on the next turn, once this view is settled in the window).
         if window != nil { keyboardProxy?.joined(self) } else { keyboardProxy?.left(self) }
@@ -693,11 +695,36 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
             if gesture.state == .began { hoverIsPencil = false }
             if gesture.zOffset > 0 || gesture.altitudeAngle > 0 { hoverIsPencil = true }
             guard !pencilTouching else { return }   // stale: the Pencil's tip is on the glass
-            let at = sendPointer(.move, at: gesture.location(in: self), clamped: true)
+            let point = gesture.location(in: self)
+            trackMouseEdge(hoverIsPencil ? nil : point)
+            let at = sendPointer(.move, at: point, clamped: true)
             if hoverIsPencil { setOwnPointer(at, .pencil) } else { setOwnPointer(nil, .none) }
         default:
+            trackMouseEdge(nil)
             hoverIsPencil = false
         }
+    }
+
+    /// iPadOS draws its own hardware pointer. While it rests at an edge, move the
+    /// picture under it and send the newly exposed location to the Mac.
+    private func trackMouseEdge(_ point: CGPoint?) {
+        edgePanPoint = point
+        guard let point, zoom.panningUnderMouse(at: point, in: bounds.size, videoRect: videoRect) != zoom else {
+            edgePanTimer?.invalidate()
+            edgePanTimer = nil
+            return
+        }
+        guard edgePanTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            guard let point = self.edgePanPoint, self.window?.windowScene?.activationState == .foregroundActive else { self.trackMouseEdge(nil); return }
+            let next = self.zoom.panningUnderMouse(at: point, in: self.bounds.size, videoRect: self.videoRect)
+            guard next != self.zoom else { self.trackMouseEdge(nil); return }
+            self.zoom = next
+            self.sendPointer(.move, at: point, clamped: true)
+        }
+        edgePanTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     // MARK: - Pencil
@@ -715,6 +742,7 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
     /// This device's own pointer after a pointer touch at `at`: the Pencil's position, from
     /// `.pencil`; none for the iPad's own trackpad or mouse, whose pointer iPadOS draws.
     private func ownPointer(_ at: CGPoint?, for touch: UITouch) {
+        trackMouseEdge(touch.type == .indirectPointer ? touch.location(in: self) : nil)
         if touch.type == .pencil { setOwnPointer(at, .pencil) } else { setOwnPointer(nil, .none) }
     }
     /// Which button the current pointer press holds down, so the up matches the down.
@@ -761,6 +789,7 @@ final class InputOverlayView: UIView, UITextInput, UIGestureRecognizerDelegate {
         if touch.type == .pencil { pencilTouching = false }
         // Never leave the button stuck down.
         if let at = sendPointer(pointerButtonIsSecondary ? .rightUp : .leftUp, at: touch.location(in: self), clamped: true) { ownPointer(at, for: touch) }
+        trackMouseEdge(nil)
         pointerButtonIsSecondary = false
     }
 

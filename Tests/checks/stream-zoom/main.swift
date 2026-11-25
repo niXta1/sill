@@ -494,6 +494,48 @@ do {
     check("two fingers on top of each other: no scale read from them", u.zoom == Z())
 }
 
+// Pointer following uses pane coordinates, including a letterboxed video's origin.
+do {
+    let size = CGSize(width: 400, height: 300), center = CGPoint(x: 200, y: 150)
+    var whole = Z()
+    whole.followPointer(at: .zero, in: size)
+    check("pointer at 1× leaves the whole picture in place", whole == Z())
+    var picture = zoomed(2, at: center, in: size)
+    let original = picture
+    picture.followPointer(at: center, in: size)
+    check("interior motion keeps the manual framing", picture == original)
+    for (point, expected) in [(CGPoint(x: 340, y: 150), CGPoint(x: 392, y: 150)),
+                              (CGPoint(x: 60, y: 150), CGPoint(x: 8, y: 150)),
+                              (CGPoint(x: 60, y: 240), CGPoint(x: 8, y: 292)),
+                              (CGPoint(x: 340, y: 60), CGPoint(x: 392, y: 8))] {
+        picture.followPointer(at: point, in: size)
+        check("minimal pan at \(point)", near(picture.zoomedPoint(point, in: size), expected) && picture.scale == 2)
+    }
+    let full = CGRect(origin: .zero, size: size)
+    let rightEdge = CGPoint(x: 399, y: 150)
+    var underMouse = original
+    for _ in 0..<100 { underMouse = underMouse.panningUnderMouse(at: rightEdge, in: size, videoRect: full) }
+    check("a stationary hardware mouse at the edge can reach the far side", near(underMouse.offset.width, -200))
+    check("native edge pan stops when the pointer moves inside", underMouse.panningUnderMouse(at: center, in: size, videoRect: full) == underMouse)
+    // A 400×202 video centred in a 400×300 pane. At 2× its bottom is reached
+    // before its right edge. A hardware mouse held in the corner must still reach both.
+    let video = CGRect(x: 0, y: 49, width: 400, height: 202)
+    let corner = CGPoint(x: 399, y: 299)
+    var diagonal = original
+    for _ in 0..<100 {
+        diagonal = diagonal.panningUnderMouse(at: corner, in: size, videoRect: video)
+    }
+    let last = diagonal.unzoomedPoint(corner, in: size)
+    check("diagonal pan stays on the letterboxed frame", near(last.y, video.maxY))
+    check("diagonal pan continues along the other image edge", near(diagonal.offset.width, -200))
+    let beyond = CGPoint(x: corner.x, y: corner.y + 1)
+    check("a pointer in the black bar does not move the image", diagonal.panningUnderMouse(at: beyond, in: size, videoRect: video) == diagonal)
+    let bottomRight = CGPoint(x: size.width, y: size.height)
+    check("the exact bottom right pane boundary scrolls", original.panningUnderMouse(at: bottomRight, in: size, videoRect: full) != original)
+    picture.followPointer(at: .zero, in: size)
+    check("following stops at the corner of the image", near(picture.zoomedPoint(.zero, in: size), .zero) && covers(picture, size))
+}
+
 // MARK: - 20,000 random strokes
 
 do {

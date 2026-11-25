@@ -3,8 +3,8 @@ import Foundation
 
 /// Pinch to zoom on the stream picture (issue #65; Noah's decisions of 2026-10-19 and 2026-10-20): two
 /// fingers on the picture zoom it from 1× to 5×, centred on the pinch (the midpoint between the
-/// fingers) as a photo in Photos is, and move it with that midpoint; no slider, and the Mac's pointer
-/// is not involved (no zoom about the cursor, no view following it). A slight pinch out leaves the
+/// fingers) as a photo in Photos is, and move it with that midpoint. A moving pointer pans the zoomed picture
+/// when its tip reaches the edge of the pane. A slight pinch out leaves the
 /// picture where it is; only a pinch all the way out gives back the whole picture. The zoom is this
 /// device's alone: nothing is sent, and the Mac's window and the viewport stay as they are.
 ///
@@ -65,6 +65,38 @@ struct StreamZoom: Equatable, Sendable {
             width: min(maxX, max(-maxX, rawX)),
             height: min(maxY, max(-maxY, rawY))
         )
+    }
+
+    /// Pan only as far as needed to keep a moving cursor tip just inside the pane.
+    /// The point is in the unscaled pane, after the video’s aspect-fit transform.
+    mutating func followPointer(at point: CGPoint, in size: CGSize) {
+        guard isZoomed, size.width > 0, size.height > 0, point.x.isFinite, point.y.isFinite else { return }
+        let tip = zoomedPoint(point, in: size)
+        let visible = insetPoint(tip, in: size)
+        if visible != tip { pinch(factor: 1, from: tip, to: visible, in: size) }
+    }
+
+    private func insetPoint(_ tip: CGPoint, in size: CGSize) -> CGPoint {
+        let insetX = min(8, size.width / 2), insetY = min(8, size.height / 2)
+        return CGPoint(x: min(max(tip.x, insetX), size.width - insetX),
+                       y: min(max(tip.y, insetY), size.height - insetY))
+    }
+
+    /// Keep the hardware pointer over the video, even when one axis reaches a letterbox
+    /// before the other runs out of content. Both ends of each axis are valid cursor positions.
+    func panningUnderMouse(at point: CGPoint, in size: CGSize, videoRect: CGRect) -> Self {
+        guard isZoomed, !videoRect.isEmpty, point.x >= 0, point.x <= size.width,
+              point.y >= 0, point.y <= size.height else { return self }
+        let first = zoomedPoint(videoRect.origin, in: size)
+        let last = zoomedPoint(CGPoint(x: videoRect.maxX, y: videoRect.maxY), in: size)
+        guard point.x >= first.x, point.x <= last.x, point.y >= first.y, point.y <= last.y else { return self }
+        let target = insetPoint(point, in: size)
+        let dx = min(point.x - first.x, max(point.x - last.x, target.x - point.x))
+        let dy = min(point.y - first.y, max(point.y - last.y, target.y - point.y))
+        guard dx != 0 || dy != 0 else { return self }
+        var next = self
+        next.pinch(factor: 1, from: .zero, to: CGPoint(x: dx, y: dy), in: size)
+        return next
     }
 
     /// The stroke that zoomed is over: a picture left within `wholeBelow` of the whole is the whole one.
